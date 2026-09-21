@@ -1,14 +1,30 @@
 import requests
 import os
+import re
 import time
+import json
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 from datetime import datetime, timezone
+from pydantic import BaseModel, ValidationError, HttpUrl
 
 BASE_URL = "https://books.toscrape.com/catalogue/page-{}.html"
 CACHE_DIR = "cache"
+OUTPUT_DIR = "output"
 
 USER_AGENT = "FlyRankInternshipA9/1.0 (+https://github.com/dishaagowda/scraper)"
+
+
+class Book(BaseModel):
+    title: str
+    product_url: HttpUrl
+    price_gbp: float
+    price_text: str
+    availability_text: str
+    rating_text: str
+    description: str | None
+    source_page: str
+    fetched_at: str
 
 
 def fetch_page(url, cache_path):
@@ -83,7 +99,7 @@ def extract_book(book_url, source_page):
     description_tag = soup.select_one("#product_description ~ p")
     description = description_tag.get_text(strip=True) if description_tag else None
 
-    record = {
+    return {
         "title": title,
         "product_url": book_url,
         "price_text": price_text,
@@ -93,18 +109,57 @@ def extract_book(book_url, source_page):
         "source_page": source_page,
         "fetched_at": datetime.now(timezone.utc).isoformat()
     }
-    return record
+
+
+def normalize_record(raw):
+    price_match = re.search(r"[\d.]+", raw["price_text"])
+    price_gbp = float(price_match.group()) if price_match else None
+
+    return {
+        **raw,
+        "price_gbp": price_gbp
+    }
+
+
+def validate_record(record):
+    try:
+        book = Book(**record)
+        return book.model_dump(mode="json"), None
+    except ValidationError as e:
+        return None, str(e)
 
 
 if __name__ == "__main__":
     urls = discover_catalogue_pages()
 
-    records = []
-    for url in urls:
-        record = extract_book(url, source_page=url)
-        if record:
-            records.append(record)
+    valid_records = []
+    error_records = []
+    seen_urls = set()
 
-    print(f"detail_pages={len(records)}")
-    if records:
-        print(records[0])
+    for url in urls:
+        raw = extract_book(url, source_page=url)
+        if raw is None:
+            error_records.append({"url": url, "reason": "fetch failed"})
+            continue
+
+        normalized = normalize_record(raw)
+
+        if normalized["product_url"] in seen_urls:
+            continue
+        seen_urls.add(normalized["product_url"])
+
+        validated, error = validate_record(normalized)
+        if validated:
+            valid_records.append(validated)
+        else:
+            error_records.append({"url": url, "reason": error})
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    with open(f"{OUTPUT_DIR}/books.json", "w", encoding="utf-8") as f:
+        json.dump(valid_records, f, indent=2, ensure_ascii=False)
+
+    with open(f"{OUTPUT_DIR}/errors.json", "w", encoding="utf-8") as f:
+        json.dump(error_records, f, indent=2, ensure_ascii=False)
+
+    print(f"valid_records={len(valid_records)} error_records={len(error_records)}")
