@@ -3,6 +3,7 @@ import os
 import time
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
+from datetime import datetime, timezone
 
 BASE_URL = "https://books.toscrape.com/catalogue/page-{}.html"
 CACHE_DIR = "cache"
@@ -19,6 +20,7 @@ def fetch_page(url, cache_path):
 
     headers = {"User-Agent": USER_AGENT}
     response = requests.get(url, headers=headers, timeout=10)
+    response.encoding = "utf-8"
 
     if response.status_code != 200:
         print(f"FETCH FAILED — status {response.status_code} — {url}")
@@ -60,5 +62,49 @@ def discover_catalogue_pages():
     return unique_urls
 
 
+def extract_book(book_url, source_page):
+    safe_name = book_url.rstrip("/").split("/")[-2]
+    cache_path = f"{CACHE_DIR}/book-{safe_name}.html"
+    html = fetch_page(book_url, cache_path)
+
+    if html is None:
+        return None
+
+    soup = BeautifulSoup(html, "html.parser")
+    product_main = soup.select_one("div.product_main")
+
+    title = product_main.select_one("h1").get_text(strip=True)
+    price_text = product_main.select_one("p.price_color").get_text(strip=True)
+    availability_text = product_main.select_one("p.availability").get_text(strip=True)
+
+    rating_tag = product_main.select_one("p.star-rating")
+    rating_text = rating_tag["class"][1] if rating_tag else None
+
+    description_tag = soup.select_one("#product_description ~ p")
+    description = description_tag.get_text(strip=True) if description_tag else None
+
+    record = {
+        "title": title,
+        "product_url": book_url,
+        "price_text": price_text,
+        "availability_text": availability_text,
+        "rating_text": rating_text,
+        "description": description,
+        "source_page": source_page,
+        "fetched_at": datetime.now(timezone.utc).isoformat()
+    }
+    return record
+
+
 if __name__ == "__main__":
     urls = discover_catalogue_pages()
+
+    records = []
+    for url in urls:
+        record = extract_book(url, source_page=url)
+        if record:
+            records.append(record)
+
+    print(f"detail_pages={len(records)}")
+    if records:
+        print(records[0])
